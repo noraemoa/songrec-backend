@@ -49,7 +49,6 @@ public class RequestController {
   private final RequestService requestService;
   private final RequestTrackService requestTrackService;
   private final RequestKeywordService requestKeywordService;
-  private final KeywordTrackService keywordTrackService;
   private final RequestFeedService requestFeedService;
   private final KeywordService keywordService;
   private final TrackService trackService;
@@ -120,22 +119,6 @@ public class RequestController {
     return requestTrackService.getTracksByRequest(principal.userId(), requestId);
   }
 
-
-  //키워드에 해당하는 트랙들을 받아서 추천도 순으로 정렬한 후 3개씩 받아와서 요청에 해당 트랙들 저장
-  @PostMapping("/{requestId}/tracks/recommendations")
-  public ResponseEntity<RecommendedTracksResponseDto> addRecommendedTracksToRequest(
-      @AuthenticationPrincipal JwtPrincipal principal,
-      @PathVariable @NotNull @Positive Long requestId,
-      @RequestParam(defaultValue = "0") @PositiveOrZero int page,
-      @RequestParam(defaultValue = "3") @Positive int size) {
-    Slice<Track> slice = keywordTrackService.getRecommendedTracks(requestId, page, size);
-    List<Track> tracks = slice.getContent();
-    tracks.forEach(track -> requestTrackService.addTrackByRequest(requestId, track.getId()));
-    return ResponseEntity.status(HttpStatus.CREATED).body(RecommendedTracksResponseDto.builder()
-        .tracks(tracks.stream().map(TrackSimpleResponseDto::from).toList()).hasNext(slice.hasNext())
-        .nextPage(slice.hasNext() ? page + 1 : page).build());
-  }
-
   // track에 추가되지 않은 spotify track을 track테이블에 먼저 추가하고 플리에 해당 track 저장
   @PostMapping("/{requestId}/tracks")
   public ResponseEntity<RequestTrackResponseDto> addSpotifyTrackByRequest(
@@ -143,13 +126,6 @@ public class RequestController {
       @PathVariable @NotNull @Positive Long requestId,
       @RequestBody @Valid TrackCreateRequestDto dto) {
     RequestTrack rt = requestTrackService.addSpotifyTrackToRequest(requestId, dto);
-
-    // 이건 이제 필요없을듯
-    List<Keyword> keywords = requestKeywordService.getKeywordsByRequest(requestId);
-    keywords.forEach(keyword -> {
-      keywordTrackService.addTrackByKeyword(keyword.getId(), rt.getTrack().getId());
-      keywordTrackService.recommendTrack(keyword.getId(), rt.getTrack().getId());
-    });
 
     try {
       trackService.ensureTrackIndexed(rt.getTrack(), dto);
@@ -168,13 +144,6 @@ public class RequestController {
       @PathVariable @NotNull @Positive Long requestId,
       @PathVariable @NotNull @Positive Long trackId) {
     RequestTrack rt = requestTrackService.addTrackByRequest(requestId, trackId);
-
-    // 해당 request의 keyword들과 이 track을 각각 연결 시키기 (해당 track을 고용 바구니에도 추가하는 작업)
-    List<Keyword> keywords = requestKeywordService.getKeywordsByRequest(requestId);
-    keywords.forEach(keyword -> {
-      keywordTrackService.addTrackByKeyword(keyword.getId(), trackId);
-      keywordTrackService.recommendTrack(keyword.getId(), trackId);
-    });
     return ResponseEntity.status(HttpStatus.CREATED).body(RequestTrackResponseDto.from(rt));
   }
 

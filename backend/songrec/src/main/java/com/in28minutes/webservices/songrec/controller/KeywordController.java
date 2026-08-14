@@ -1,18 +1,10 @@
 package com.in28minutes.webservices.songrec.controller;
 
 import com.in28minutes.webservices.songrec.domain.keyword.Keyword;
-import com.in28minutes.webservices.songrec.domain.keyword.KeywordTrack;
-import com.in28minutes.webservices.songrec.domain.track.Track;
 import com.in28minutes.webservices.songrec.dto.request.KeywordCreateRequestDto;
 import com.in28minutes.webservices.songrec.dto.response.keyword.KeywordResponseDto;
-import com.in28minutes.webservices.songrec.dto.response.keyword.KeywordTrackResponseDto;
-import com.in28minutes.webservices.songrec.dto.response.track.TrackResponseDto;
-import com.in28minutes.webservices.songrec.dto.response.TrackSimpleResponseDto;
 import com.in28minutes.webservices.songrec.service.KeywordService;
-import com.in28minutes.webservices.songrec.service.KeywordTrackService;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -26,7 +18,6 @@ import java.util.List;
 @Validated
 public class KeywordController {
     private final KeywordService keywordService;
-    private final KeywordTrackService keywordTrackService;
 
     @PostMapping("/keywords")
     public ResponseEntity<KeywordResponseDto> createKeyword(@Valid @RequestBody KeywordCreateRequestDto dto){
@@ -45,29 +36,5 @@ public class KeywordController {
         return keywords.stream().map(KeywordResponseDto::from).toList();
     }
 
-    @PostMapping("/keywords/{keywordId}/tracks/{trackId}")
-    public ResponseEntity<KeywordTrackResponseDto> addTrackByKeyword(
-            @PathVariable @NotNull @Positive Long keywordId,
-            @PathVariable @NotNull @Positive Long trackId){
-        keywordTrackService.addTrackByKeyword(keywordId, trackId);
-        KeywordTrackResponseDto keywordTrack = KeywordTrackResponseDto.from(
-                keywordTrackService.recommendTrack(keywordId,trackId));
 
-        return ResponseEntity.status(HttpStatus.CREATED).body(keywordTrack);
-    }
-
-    @GetMapping ("/keywords/{keywordId}/tracks")
-    public List<TrackSimpleResponseDto> getTrackByKeyword(@PathVariable Long keywordId){
-        List<Track> tracksList = keywordTrackService.getTracksByKeyword(keywordId);
-        return tracksList.stream().map(TrackSimpleResponseDto::from).toList();
-    }
-
-    @GetMapping("/keywords/{keywordId}/tracks/{trackId}/recommend")
-    public KeywordTrackResponseDto getTrackRecommendCount(
-            @PathVariable @NotNull @Positive Long keywordId,
-            @PathVariable @NotNull @Positive Long trackId
-    ){
-        KeywordTrack kt = keywordTrackService.getKeywordTrack(keywordId,trackId);
-        return KeywordTrackResponseDto.from(kt);
-    }
 }

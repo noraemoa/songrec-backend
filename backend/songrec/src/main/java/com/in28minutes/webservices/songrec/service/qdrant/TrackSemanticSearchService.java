@@ -10,12 +10,15 @@ import com.in28minutes.webservices.songrec.integration.qdrant.dto.QdrantRetrieve
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.QdrantSearchResponse;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.QdrantSearchResponse.Point;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.QueryEmbeddingPayload;
+import com.in28minutes.webservices.songrec.integration.qdrant.dto.QueryVectorBuildResultDto;
+import com.in28minutes.webservices.songrec.integration.qdrant.dto.RerankPrepareResultDto;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.RerankedCandidate;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.SongPayload;
 import com.in28minutes.webservices.songrec.repository.RequestTrackRepository;
 import com.in28minutes.webservices.songrec.repository.TrackLikeRepository;
 import com.in28minutes.webservices.songrec.repository.TrackRepository;
 import com.in28minutes.webservices.songrec.repository.UserRepository;
+import com.in28minutes.webservices.songrec.repository.projection.LikedTrackCountRow;
 import com.in28minutes.webservices.songrec.repository.projection.LikedTrackRow;
 import com.in28minutes.webservices.songrec.repository.projection.RequestTrackFeedbackRow;
 import com.in28minutes.webservices.songrec.service.RequestTrackService;
@@ -49,23 +52,68 @@ public class TrackSemanticSearchService {
 
   public List<TrackSemanticSearchItemDto> search(Long userId, Long requestId, String query,
       int limit) {
+    long totalStart = System.nanoTime();
 
     // query 분석
+    long t1 = System.nanoTime();
     TrackSearchQueryAnalysisResult analysis =
         trackSearchQueryAnalysisService.analyze(query);
+    long analyzeMs = (System.nanoTime() - t1) / 1000000;
 
     // qdrant 후보
-    List<Float> queryVector = buildQueryVectorAndUpsert(requestId, analysis);
+    long t2 = System.nanoTime();
+    QueryVectorBuildResultDto queryVectorBuildResult = buildQueryVectorAndUpsert(requestId,
+        analysis);
+    List<Float> queryVector = queryVectorBuildResult.getVector();
+    long queryEmbeddingMs = (System.nanoTime() - t2) / 1000000;
+
+    long t3 = System.nanoTime();
     List<Point> response = searchCandidates(queryVector, 50);
+    long candidateSearchMs = (System.nanoTime() - t3) / 1000000;
 
     // 재정렬
     if (response == null || response.isEmpty()) {
+      long totalMs = (System.nanoTime() - totalStart) / 1000000;
+      log.info(
+          "searchPerf requestId={},analyzeMs={}, queryEmbeddingMs={},candidateSearchMs={},totalMs={}",
+          requestId, analyzeMs, queryEmbeddingMs, candidateSearchMs, totalMs);
       return null;
     }
-    List<RerankedCandidate> selectedCandidates = selectRerankedCandidates(
-        queryVector, response, userId);
 
-    return rerank(selectedCandidates, limit);
+    long t4 = System.nanoTime();
+    RerankPrepareResultDto selectCandidateResult = selectRerankedCandidates(
+        queryVector, response, userId);
+    List<RerankedCandidate> selectedCandidates = selectCandidateResult.getSelectedCandidates();
+    long rerankPrepareMs = (System.nanoTime() - t4) / 1000000;
+
+    long t5 = System.nanoTime();
+    List<TrackSemanticSearchItemDto> result = rerank(selectedCandidates, limit);
+    long rerankMs = (System.nanoTime() - t5) / 1000000;
+
+    long totalMs = (System.nanoTime() - totalStart) / 1000000;
+
+    log.info(
+        "PERF_SUMMARY requestId={} totalMs={} analyzeMs={} embedMs={} upsertMs={} candidateSearchMs={} rerankPrepareMs={} rerankMs={} "
+            + "likedVectorMs={} profileVectorMs={} similarQuerySearchMs={} batchMs={} selectCandidateMs={} "
+            + "popularityTotalMs={} feedbackTotalMs={} similarityFilterTotalMs={}",
+        requestId,
+        totalMs,
+        analyzeMs,
+        queryVectorBuildResult.getEmbedMs(),
+        queryVectorBuildResult.getUpsertMs(),
+        candidateSearchMs,
+        rerankPrepareMs,
+        rerankMs,
+        selectCandidateResult.getLikedVectorMs(),
+        selectCandidateResult.getProfileVectorMs(),
+        selectCandidateResult.getSimilarQuerySearchMs(),
+        selectCandidateResult.getBatchMs(),
+        selectCandidateResult.getSelectCandidateMs(),
+        selectCandidateResult.getTotalPopularityMs(),
+        selectCandidateResult.getTotalFeedbackMs(),
+        selectCandidateResult.getTotalSimilarTrackFilterMs()
+    );
+    return result;
   }
 
   private String buildSearchText(TrackSearchQueryAnalysisResult result) {
@@ -79,11 +127,14 @@ public class TrackSemanticSearchService {
     ).trim().replaceAll("\\s+", " ");
   }
 
-  private List<Float> buildQueryVectorAndUpsert(Long requestId,
+  private QueryVectorBuildResultDto buildQueryVectorAndUpsert(Long requestId,
       TrackSearchQueryAnalysisResult queryAnalysisResult) {
+    long tEmbed = System.nanoTime();
     String searchText = buildSearchText(queryAnalysisResult);
     List<Float> vector = embeddingService.embedText(searchText);
+    long embedMs = (System.nanoTime() - tEmbed) / 1000000;
 
+    long tUpsert = System.nanoTime();
     QueryEmbeddingPayload payload = QueryEmbeddingPayload.builder()
         .requestId(requestId)
         .queryText(searchText).build();
@@ -93,8 +144,11 @@ public class TrackSemanticSearchService {
         .vector(vector)
         .payload(payload).build();
     qdrantClient.upsertQueryEmbeddingPoint(point);
-
-    return vector;
+    long upsertMs = (System.nanoTime() - tUpsert) / 1000000;
+    return QueryVectorBuildResultDto.builder()
+        .vector(vector)
+        .embedMs(embedMs)
+        .upsertMs(upsertMs).build();
   }
 
   public List<Point> searchCandidates(List<Float> vector,
@@ -107,9 +161,9 @@ public class TrackSemanticSearchService {
     return response.getResult().getPoints();
   }
 
-  public List<RerankedCandidate> selectRerankedCandidates(List<Float> queryVector,
+  public RerankPrepareResultDto selectRerankedCandidates(List<Float> queryVector,
       List<Point> response, Long userId) {
-
+    long tLikedVector = System.nanoTime();
     User user = userRepository.findById(userId).orElse(null);
 
     // 좋아하는 track vector들의 평균
@@ -117,8 +171,12 @@ public class TrackSemanticSearchService {
     try {
       likedAverageVector = likedAverageVector(userId);
     } catch (Exception e) {
+      log.warn("Failed to load likedAverageVector for userId={}", userId, e);
+      likedAverageVector = null;
     }
+    long likedVectorMs = (System.nanoTime() - tLikedVector) / 1000000;
 
+    long tProfile = System.nanoTime();
     // 프로필 vector
     List<Float> profileVector = null;
     try {
@@ -136,24 +194,38 @@ public class TrackSemanticSearchService {
     } catch (Exception e) {
       profileVector = null;
     }
+    long profileVectorMs = (System.nanoTime() - tProfile) / 1000000;
 
+    long tSimilar = System.nanoTime();
     // 과거 유사한 query vector들의 평균
     QdrantSearchResponse queryResponse = qdrantClient.searchQuery(queryVector, 30);
     List<Long> queryRequestIds = queryResponse.getResult().getPoints().stream().map(Point::getId)
         .toList();
+    long similarQuerySearchMs = (System.nanoTime() - tSimilar) / 1000000;
 
+    long tBatch = System.nanoTime();
     List<Long> trackIds = response.stream().map(Point::getId).toList();
     Map<Long, Track> trackMap = trackRepository.findAllByIdIn(trackIds).stream().collect(
         Collectors.toMap(Track::getId, Function.identity()));
 
     // requestId로 score(sim) 찾기
-    Map<Long, Double> requestSimiarityMap = queryResponse.getResult().getPoints().stream().collect(
-        Collectors.toMap(Point::getId, p->p.getScore()==null?0.0:p.getScore()));
+    Map<Long, Double> requestSimilarityMap = queryResponse.getResult().getPoints().stream().collect(
+        Collectors.toMap(Point::getId, p -> p.getScore() == null ? 0.0 : p.getScore()));
     // trackId로 row 찾기
     Map<Long, List<RequestTrackFeedbackRow>> feedbackRowByTrackId = requestTrackRepository.findFeedbackRowByRequestIdsAndTrackIds(
             queryRequestIds, trackIds).stream()
         .collect(Collectors.groupingBy(RequestTrackFeedbackRow::getTrackId));
 
+    Map<Long, Long> totalTrackLikedCount = trackLikeRepository.countLikedByTrackIds(trackIds)
+        .stream()
+        .collect(
+            Collectors.toMap(LikedTrackCountRow::getTrackId, LikedTrackCountRow::getLikedCount));
+    long batchMs = (System.nanoTime() - tBatch) / 1000000;
+
+    long totalSimilarTrackFilterMs = 0;
+    long totalPopularityMs = 0;
+    long totalFeedbackMs = 0;
+    long tSelectCandidates = System.nanoTime();
     List<RerankedCandidate> selectedCandidates = new ArrayList<>();
     List<Point> filteredPoints = new ArrayList<>();
     for (Point candidate : response) {
@@ -161,6 +233,7 @@ public class TrackSemanticSearchService {
         continue;
       }
 
+      long tSimilarTrackFilter = System.nanoTime();
       // 유사한 트랙들 걸러내기
       boolean tooSimilar = false;
       for (Point filteredPoint : filteredPoints) {
@@ -177,6 +250,7 @@ public class TrackSemanticSearchService {
       if (tooSimilar) {
         continue;
       }
+      totalSimilarTrackFilterMs += (System.nanoTime() - tSimilarTrackFilter) / 1000000;
 
       double qdrantScore = candidate.getScore() == null ? 0.0 : candidate.getScore();
 
@@ -186,9 +260,11 @@ public class TrackSemanticSearchService {
       }
       Long trackId = track.getId();
 
+      long tPopularity = System.nanoTime();
       // 인기도 계산
-      Long likedCount = trackLikeRepository.countByTrackId(trackId);
+      Long likedCount = totalTrackLikedCount.get(trackId);
       double popularityScore = normalizePopularity(likedCount);
+      totalPopularityMs += (System.nanoTime() - tPopularity) / 1000000;
 
       // 사용자 선호 유사도 계산
       double likedScore = 0.0;
@@ -202,28 +278,34 @@ public class TrackSemanticSearchService {
         profileScore = cosineSimilarity(candidate.getVector(), profileVector);
       }
 
+      long tFeedback = System.nanoTime();
       // 과거 별점 피드백 반영
-      double adjustedFeedbackScore=0.0;
+      double adjustedFeedbackScore = 0.0;
       List<RequestTrackFeedbackRow> feedbackRows = feedbackRowByTrackId.get(trackId);
-      double weightedSum=0.0;
-      double weightSum=0.0;
-      if(feedbackRows!=null){
-        for(RequestTrackFeedbackRow feedbackRow : feedbackRows){
-          Double sim = requestSimiarityMap.get(feedbackRow.getTrackId());
-          if(sim==null||sim<=0.0) continue;
+      double weightedSum = 0.0;
+      double weightSum = 0.0;
+      if (feedbackRows != null) {
+        for (RequestTrackFeedbackRow feedbackRow : feedbackRows) {
+          Double sim = requestSimilarityMap.get(feedbackRow.getRequestId());
+          if (sim == null || sim <= 0.0) {
+            continue;
+          }
 
           double avgRating = feedbackRow.getAvgRating();
           double normalized = (avgRating - 3.0) / 2.0;
-          double confidence = Math.min(1.0, Math.log(1 + feedbackRow.getRatingCount()) / Math.log(20));
+          double confidence = Math.min(1.0,
+              Math.log(1 + feedbackRow.getRatingCount()) / Math.log(20));
           double adjustedFeedback = normalized * confidence;
 
-          weightedSum+=(sim*adjustedFeedback);
-          weightSum+=sim;
+          weightedSum += (sim * adjustedFeedback);
+          weightSum += sim;
         }
       }
+      totalFeedbackMs += (System.nanoTime() - tFeedback) / 1000000;
 
-
-      if(weightedSum>0.0) adjustedFeedbackScore =weightedSum/weightSum;
+      if (weightSum > 0.0) {
+        adjustedFeedbackScore = weightedSum / weightSum;
+      }
 
       double finalScore =
           0.60 * qdrantScore + 0.10 * profileScore + 0.10 * likedScore + 0.05 * popularityScore
@@ -231,8 +313,18 @@ public class TrackSemanticSearchService {
       filteredPoints.add(candidate);
       selectedCandidates.add(new RerankedCandidate(candidate, track, finalScore));
     }
+    long selectCandidateMs = (System.nanoTime() - tSelectCandidates) / 1000000;
 
-    return selectedCandidates;
+    return RerankPrepareResultDto.builder()
+        .totalFeedbackMs(totalFeedbackMs)
+        .totalPopularityMs(totalPopularityMs)
+        .totalSimilarTrackFilterMs(totalSimilarTrackFilterMs)
+        .likedVectorMs(likedVectorMs)
+        .profileVectorMs(profileVectorMs)
+        .similarQuerySearchMs(similarQuerySearchMs)
+        .batchMs(batchMs)
+        .selectedCandidates(selectedCandidates)
+        .selectCandidateMs(selectCandidateMs).build();
   }
 
 
@@ -240,6 +332,9 @@ public class TrackSemanticSearchService {
       int limit) {
     List<TrackSemanticSearchItemDto> results = new ArrayList<>();
 
+    if (selectedCandidates == null) {
+      return results;
+    }
     selectedCandidates.sort((a, b) -> Double.compare(b.getFinalScore(), a.getFinalScore()));
     selectedCandidates.stream()
         .limit(limit)

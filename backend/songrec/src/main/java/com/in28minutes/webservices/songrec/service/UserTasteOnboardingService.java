@@ -12,6 +12,7 @@ import com.in28minutes.webservices.songrec.integration.openai.dto.UserTasteProfi
 import com.in28minutes.webservices.songrec.integration.qdrant.client.QdrantClient;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.QdrantRetrieveResponse;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.QdrantSearchResponse;
+import com.in28minutes.webservices.songrec.integration.qdrant.dto.RerankPrepareResultDto;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.RerankedCandidate;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.UserProfilePayload;
 import com.in28minutes.webservices.songrec.repository.UserPreferenceTagRepository;
@@ -99,8 +100,9 @@ public class UserTasteOnboardingService {
       vector = null;
     }
     QdrantSearchResponse response = qdrantClient.searchSong(vector,10);
-    List<RerankedCandidate> selectedCandidates = trackSemanticSearchService.selectRerankedCandidates(
+    RerankPrepareResultDto selectCandidateResult = trackSemanticSearchService.selectRerankedCandidates(
         vector,response.getResult().getPoints(), userId);
+    List<RerankedCandidate> selectedCandidates = selectCandidateResult.getSelectedCandidates();
 
     return trackSemanticSearchService.rerank(selectedCandidates, 3);
   }

@@ -5,6 +5,7 @@ import com.in28minutes.webservices.songrec.evaluation.metrics.NdcgCalculator;
 import com.in28minutes.webservices.songrec.evaluation.metrics.TagRelevanceCalculator;
 import com.in28minutes.webservices.songrec.integration.openai.dto.TrackSearchQueryAnalysisResult;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.QdrantSearchResponse.Point;
+import com.in28minutes.webservices.songrec.integration.qdrant.dto.RerankPrepareResultDto;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.RerankedCandidate;
 import com.in28minutes.webservices.songrec.integration.qdrant.dto.SongPayload;
 import com.in28minutes.webservices.songrec.service.openai.TrackSearchQueryAnalysisService;
@@ -74,8 +75,9 @@ public class RecommendationEvaluator {
     double beforeRerankPrecision = tagRelevanceCalculator.calculatePrecision(
         queryTags, beforeTop10);
 
-    List<RerankedCandidate> selectedCandidates = trackSemanticSearchService.selectRerankedCandidates(
+    RerankPrepareResultDto selectCandidateResult=trackSemanticSearchService.selectRerankedCandidates(
         queryVector,candidates, userId);
+    List<RerankedCandidate> selectedCandidates = selectCandidateResult.getSelectedCandidates();
     selectedCandidates.sort((a, b) -> Double.compare(b.getFinalScore(), a.getFinalScore()));
 
     List<Point> afterTop10 = selectedCandidates.stream().limit(10)
